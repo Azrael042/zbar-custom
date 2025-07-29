@@ -63,6 +63,9 @@
 #if ENABLE_SQCODE == 1
 #include "decoder/sq_finder.h"
 #endif
+#if ENABLE_AZTEC == 1
+#include "decoder/aztec.h"
+#endif
 
 /* size of bar width history (implementation assumes power of two) */
 #ifndef DECODE_WINDOW
@@ -137,6 +140,9 @@ struct zbar_decoder_s {
 #endif
 #if ENABLE_SQCODE == 1
     sq_finder_t sqf; /* SQ Code finder state */
+#endif
+#if ENABLE_AZTEC == 1
+    aztec_decoder_t aztec; /* Aztec decode state */
 #endif
 };
 

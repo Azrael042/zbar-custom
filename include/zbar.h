@@ -109,6 +109,7 @@ typedef enum zbar_symbol_type_e
     ZBAR_SQCODE	     = 80,  /**< SQ Code. @since 0.20.1 */
     ZBAR_CODE93	     = 93,  /**< Code 93. @since 0.11 */
     ZBAR_CODE128     = 128, /**< Code 128 */
+    ZBAR_AZTEC       = 129, /**< Aztec Code. @since 0.24 */
 
     /*
      * Please see _zbar_get_symbol_hash() if adding

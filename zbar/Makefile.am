@@ -55,6 +55,9 @@ if ENABLE_SQCODE
 libzbar_la_SOURCES += sqcode.h sqcode.c \
     decoder/sq_finder.h decoder/sq_finder.c
 endif
+if ENABLE_AZTEC
+libzbar_la_SOURCES += decoder/aztec.h decoder/aztec.c
+endif
 
 if WIN32
 

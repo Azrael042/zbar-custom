@@ -95,6 +95,9 @@ zbar_decoder_t *zbar_decoder_create()
 #if ENABLE_SQCODE == 1
     dcode->sqf.config = 1 << ZBAR_CFG_ENABLE;
 #endif
+#if ENABLE_AZTEC == 1
+    dcode->aztec.config = 1 << ZBAR_CFG_ENABLE;
+#endif
 
     zbar_decoder_reset(dcode);
     return (dcode);
@@ -141,6 +144,9 @@ void zbar_decoder_reset(zbar_decoder_t *dcode)
 #if ENABLE_QRCODE == 1
     qr_finder_reset(&dcode->qrf);
 #endif
+#if ENABLE_AZTEC == 1
+    aztec_reset(&dcode->aztec);
+#endif
 }
 
 void zbar_decoder_new_scan(zbar_decoder_t *dcode)
@@ -176,6 +182,9 @@ void zbar_decoder_new_scan(zbar_decoder_t *dcode)
 #endif
 #if ENABLE_QRCODE == 1
     qr_finder_reset(&dcode->qrf);
+#endif
+#if ENABLE_AZTEC == 1
+    aztec_reset(&dcode->aztec);
 #endif
 }
 
@@ -284,6 +293,11 @@ zbar_symbol_type_t zbar_decode_width(zbar_decoder_t *dcode, unsigned w)
 	(tmp = _zbar_decode_pdf417(dcode)) > ZBAR_PARTIAL)
 	sym = tmp;
 #endif
+#if ENABLE_AZTEC == 1
+    if (TEST_CFG(dcode->aztec.config, ZBAR_CFG_ENABLE) &&
+	(tmp = _zbar_decode_aztec(dcode)) > ZBAR_PARTIAL)
+	sym = tmp;
+#endif
 
     dcode->idx++;
     dcode->type = sym;
@@ -389,6 +403,12 @@ decoder_get_configp(const zbar_decoder_t *dcode, zbar_symbol_type_t sym)
 #if ENABLE_SQCODE == 1
     case ZBAR_SQCODE:
 	config = &dcode->sqf.config;
+	break;
+#endif
+
+#if ENABLE_AZTEC == 1
+    case ZBAR_AZTEC:
+	config = &dcode->aztec.config;
 	break;
 #endif
 
