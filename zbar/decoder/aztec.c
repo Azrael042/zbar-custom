@@ -201,20 +201,22 @@ static inline int aztec_decode_finder(zbar_decoder_t *dcode)
             return 0;
             
         case AZTEC_STATE_FINDER:
-            /* Look for bull's-eye pattern */
-            int is_compact;
-            int pattern_size = detect_bullseye_pattern(dcode, 100, 100, &is_compact);
-            
-            if (pattern_size > 0) {
-                /* Found bull's-eye pattern */
-                aztec_dec->finder.center_x = 100;
-                aztec_dec->finder.center_y = 100;
-                aztec_dec->finder.size = pattern_size;
-                aztec_dec->finder.is_compact = is_compact;
-                aztec_dec->state = AZTEC_STATE_ORIENTATION;
-                return 0;
+            {
+                /* Look for bull's-eye pattern */
+                int is_compact;
+                int pattern_size = detect_bullseye_pattern(dcode, 100, 100, &is_compact);
+                
+                if (pattern_size > 0) {
+                    /* Found bull's-eye pattern */
+                    aztec_dec->finder.center_x = 100;
+                    aztec_dec->finder.center_y = 100;
+                    aztec_dec->finder.size = pattern_size;
+                    aztec_dec->finder.is_compact = is_compact;
+                    aztec_dec->state = AZTEC_STATE_ORIENTATION;
+                    return 0;
+                }
+                break;
             }
-            break;
             
         case AZTEC_STATE_ORIENTATION:
             /* Determine orientation from corner patterns */
@@ -233,33 +235,35 @@ static inline int aztec_decode_finder(zbar_decoder_t *dcode)
             break;
             
         case AZTEC_STATE_DATA:
-            /* Extract and decode data */
-            unsigned char bits[2048];
-            int bit_count = extract_data_bits(dcode, aztec_dec, bits, 2048);
-            
-            if (bit_count > 0) {
-                /* Apply error correction */
-                if (apply_error_correction(bits, 
-                                         aztec_dec->mode.data_codewords * 8,
-                                         aztec_dec->mode.ecc_codewords * 8)) {
-                    
-                    /* Decode data */
-                    unsigned char decoded_data[512];
-                    int decoded_len = decode_aztec_data(bits, bit_count, 
-                                                       decoded_data, 512);
-                    
-                    if (decoded_len > 0) {
-                        /* Store decoded data in decoder buffer */
-                        if (decoded_len < sizeof(dcode->buf)) {
-                            memcpy(dcode->buf, decoded_data, decoded_len);
-                            dcode->buflen = decoded_len;
-                            aztec_dec->state = AZTEC_STATE_COMPLETE;
-                            return 1; /* Success! */
+            {
+                /* Extract and decode data */
+                unsigned char bits[2048];
+                int bit_count = extract_data_bits(dcode, aztec_dec, bits, 2048);
+                
+                if (bit_count > 0) {
+                    /* Apply error correction */
+                    if (apply_error_correction(bits, 
+                                             aztec_dec->mode.data_codewords * 8,
+                                             aztec_dec->mode.ecc_codewords * 8)) {
+                        
+                        /* Decode data */
+                        unsigned char decoded_data[512];
+                        int decoded_len = decode_aztec_data(bits, bit_count, 
+                                                           decoded_data, 512);
+                        
+                        if (decoded_len > 0) {
+                            /* Store decoded data in decoder buffer */
+                            if (decoded_len < sizeof(dcode->buf)) {
+                                memcpy(dcode->buf, decoded_data, decoded_len);
+                                dcode->buflen = decoded_len;
+                                aztec_dec->state = AZTEC_STATE_COMPLETE;
+                                return 1; /* Success! */
+                            }
                         }
                     }
                 }
+                break;
             }
-            break;
             
         case AZTEC_STATE_COMPLETE:
             /* Decoding complete */
