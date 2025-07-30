@@ -46,8 +46,23 @@
 #if ENABLE_SQCODE == 1
 #include "sqcode.h"
 #endif
+#if ENABLE_AZTEC == 1
+#include "decoder/aztec.h"
+#endif
 #include "img_scanner.h"
 #include "svg.h"
+
+/* Debug logging control - set to 1 to enable debug output for troubleshooting
+ * When enabled, outputs detailed scanning progress to browser console
+ * Set to 0 for production to improve performance and reduce console noise
+ */
+#define ZBAR_DEBUG_LOGGING 0
+
+#if ZBAR_DEBUG_LOGGING
+#define DEBUG_LOG(fmt, ...) do { printf(fmt, ##__VA_ARGS__); fflush(stdout); } while(0)
+#else
+#define DEBUG_LOG(fmt, ...) do { } while(0)
+#endif
 
 #if 1
 #define ASSERT_POS assert(p == data + x + y * (intptr_t)w)
@@ -98,6 +113,9 @@ struct zbar_image_scanner_s {
 #endif
 #if ENABLE_SQCODE == 1
     sq_reader *sq; /* SQ Code 2D reader */
+#endif
+#if ENABLE_AZTEC == 1
+    void *aztec; /* Aztec 2D reader placeholder */
 #endif
 
     const void *userdata; /* application data */
@@ -867,6 +885,8 @@ static void zbar_send_code_via_dbus(zbar_image_scanner_t *iscn,
 
 static void *_zbar_scan_image(zbar_image_scanner_t *iscn, zbar_image_t *img)
 {
+    DEBUG_LOG("🚨 ZBAR: _zbar_scan_image ENTRY POINT - main scan function called!\n");
+    
     zbar_symbol_set_t *syms;
     const uint8_t *data;
     zbar_scanner_t *scn = iscn->scn;
@@ -875,10 +895,14 @@ static void *_zbar_scan_image(zbar_image_scanner_t *iscn, zbar_image_t *img)
     char filter;
     int nean, naddon;
 
+    DEBUG_LOG("🚨 ZBAR: Variables declared, getting timer\n");
+
     /* timestamp image
      * FIXME prefer video timestamp
      */
     iscn->time = _zbar_timer_now();
+    
+    DEBUG_LOG("🚨 ZBAR: Timer set, checking QR reset\n");
 
 #if ENABLE_QRCODE == 1
     _zbar_qr_reset(iscn->qr);
@@ -888,22 +912,34 @@ static void *_zbar_scan_image(zbar_image_scanner_t *iscn, zbar_image_t *img)
     _zbar_sq_reset(iscn->sq);
 #endif
 
+    DEBUG_LOG("🚨 ZBAR: Checking image format\n");
+    
     /* image must be in grayscale format */
     if (img->format != fourcc('Y', '8', '0', '0') &&
 	img->format != fourcc('G', 'R', 'E', 'Y'))
 	return NULL;
     iscn->img = img;
 
+    DEBUG_LOG("🚨 ZBAR: Format OK, recycling image\n");
+
     /* recycle previous scanner and image results */
     zbar_image_scanner_recycle_image(iscn, img);
+    
+    DEBUG_LOG("🚨 ZBAR: Getting symbol set\n");
+    
     syms = iscn->syms;
     if (!syms) {
+	DEBUG_LOG("🚨 ZBAR: Creating new symbol set\n");
 	syms = iscn->syms = _zbar_symbol_set_create();
 	STAT(syms_new);
 	zbar_symbol_set_ref(syms, 1);
-    } else
+    } else {
+	DEBUG_LOG("🚨 ZBAR: Reusing existing symbol set\n");
 	zbar_symbol_set_ref(syms, 2);
+    }
     img->syms = syms;
+
+    DEBUG_LOG("🚨 ZBAR: Getting image dimensions\n");
 
     w	= img->width;
     h	= img->height;
@@ -911,38 +947,81 @@ static void *_zbar_scan_image(zbar_image_scanner_t *iscn, zbar_image_t *img)
     assert(cx1 <= w);
     cy1 = img->crop_y + img->crop_h;
     assert(cy1 <= h);
+    
+    DEBUG_LOG("🚨 ZBAR: Dimensions OK: %dx%d, crop: %d,%d %dx%d, getting data\n", 
+           w, h, img->crop_x, img->crop_y, img->crop_w, img->crop_h);
+    
     data = img->data;
+    
+    DEBUG_LOG("🚨 ZBAR: Data pointer obtained: %p\n", data);
 
+    DEBUG_LOG("🚨 ZBAR: About to write debug PNG\n");
+    
     zbar_image_write_png(img, "debug.png");
+    
+    DEBUG_LOG("🚨 ZBAR: PNG written, opening SVG\n");
+    
     svg_open("debug.svg", 0, 0, w, h);
     svg_image("debug.png", w, h);
 
+    DEBUG_LOG("🚨 ZBAR: SVG opened, starting new scan\n");
+
     zbar_scanner_new_scan(scn);
 
+    DEBUG_LOG("🚨 ZBAR: Scanner new scan complete, getting density config\n");
+
     density = CFG(iscn, ZBAR_CFG_Y_DENSITY);
+    
+    DEBUG_LOG("🚨 ZBAR: Y density: %d\n", density);
     if (density > 0) {
+	DEBUG_LOG("🚨 ZBAR: Entering Y density scan (density > 0)\n");
+	
 	const uint8_t *p = data;
 	int x = 0, y = 0;
+
+	DEBUG_LOG("🚨 ZBAR: Initial pointer p=%p, data=%p, x=%d, y=%d\n", p, data, x, y);
 
 	int border = (((img->crop_h - 1) % density) + 1) / 2;
 	if (border > img->crop_h / 2)
 	    border = img->crop_h / 2;
 	border += img->crop_y;
 	assert(border <= h);
+	
+	DEBUG_LOG("🚨 ZBAR: Border calculated: %d, crop_h=%d, crop_y=%d, h=%d\n", 
+	       border, img->crop_h, img->crop_y, h);
+	
 	svg_group_start("scanner", 0, 1, 1, 0, 0);
 	iscn->dy = 0;
 
 	movedelta(img->crop_x, border);
 	iscn->v = y;
 
+	DEBUG_LOG("🚨 ZBAR: Starting main Y scan loop, y=%d, cy1=%d\n", y, cy1);
+	
 	while (y < cy1) {
 	    int cx0 = img->crop_x;
 	    ;
+	    DEBUG_LOG("🚨 ZBAR: Y loop iteration: y=%d, cx0=%d, cx1=%d, pointer p=%p\n", 
+	           y, cx0, cx1, p);
+	    
 	    zprintf(128, "img_x+: %04d,%04d @%p\n", x, y, p);
 	    svg_path_start("vedge", 1. / 32, 0, y + 0.5);
 	    iscn->dx = iscn->du = 1;
 	    iscn->umin		= cx0;
+	    
+	    DEBUG_LOG("🚨 ZBAR: Starting X scan loop, x=%d, cx1=%d\n", x, cx1);
+	    
 	    while (x < cx1) {
+		// Safety check: ensure we don't read beyond image data
+		int offset = (int)(p - data);
+		if (offset >= (int)img->datalen) {
+		    DEBUG_LOG("🚨 ZBAR: BOUNDARY VIOLATION! offset=%d >= datalen=%u at x=%d,y=%d, breaking\n", 
+		           offset, (unsigned)img->datalen, x, y);
+		    // Fix pointer sync when breaking early - recalculate p from x,y coordinates
+		    p = data + x + y * (intptr_t)w;
+		    break;
+		}
+		
 		uint8_t d = *p;
 		movedelta(1, 0);
 		zbar_scan_y(scn, d);
@@ -961,6 +1040,16 @@ static void *_zbar_scan_image(zbar_image_scanner_t *iscn, zbar_image_t *img)
 	    iscn->dx = iscn->du = -1;
 	    iscn->umin		= cx1;
 	    while (x >= cx0) {
+		// Safety check: ensure we don't read beyond image data  
+		int offset = (int)(p - data);
+		if (offset >= (int)img->datalen || offset < 0) {
+		    DEBUG_LOG("🚨 ZBAR: BOUNDARY VIOLATION in reverse! offset=%d, datalen=%u, breaking\n", 
+		           offset, (unsigned)img->datalen);
+		    // Fix pointer sync when breaking early - recalculate p from x,y coordinates
+		    p = data + x + y * (intptr_t)w;
+		    break;
+		}
+		
 		uint8_t d = *p;
 		movedelta(-1, 0);
 		zbar_scan_y(scn, d);
@@ -1038,6 +1127,10 @@ static void *_zbar_scan_image(zbar_image_scanner_t *iscn, zbar_image_t *img)
 #if ENABLE_SQCODE == 1
     sq_handler(iscn);
     _zbar_sq_decode(iscn->sq, iscn, img);
+#endif
+
+#if ENABLE_AZTEC == 1
+    _zbar_aztec_scan_image(iscn, img);
 #endif
 
     /* FIXME tmp hack to filter bad EAN results */

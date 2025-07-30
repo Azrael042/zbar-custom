@@ -82,7 +82,6 @@ typedef struct aztec_decoder_s {
     int data_length;            /* length of decoded data */
     
     unsigned config;
-    int configs[NUM_CFGS];      /* int valued configurations */
 } aztec_decoder_t;
 
 /* reset Aztec specific state */
@@ -112,5 +111,8 @@ static inline void aztec_reset(aztec_decoder_t *dcode_aztec)
 
 /* decode Aztec symbols */
 zbar_symbol_type_t _zbar_decode_aztec(zbar_decoder_t *dcode);
+
+/* 2D image scanning for Aztec codes */
+void _zbar_aztec_scan_image(void *iscn_ptr, void *img_ptr);
 
 #endif 
