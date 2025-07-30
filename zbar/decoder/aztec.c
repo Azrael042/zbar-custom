@@ -73,53 +73,203 @@ static const char digit_table[] = " 0123456789,.";
 #define RS_FCR 1            /* first consecutive root */
 
 /* Detect bull's-eye finder pattern in the image */
-static int detect_bullseye_pattern(zbar_decoder_t *dcode, int x, int y, int *is_compact)
+static int detect_bullseye_pattern(zbar_decoder_t *dcode, int x, int y, int *is_compact) 
 {
-    /* This is a simplified implementation of bull's-eye detection
-     * In a real implementation, this would analyze the actual image data
-     * looking for the concentric square pattern characteristic of Aztec codes
-     */
+    int width = dcode->img->width;
+    int height = dcode->img->height;
+    unsigned char *data = dcode->img->data;
+    int row_stride = dcode->img->stride;
     
-    /* For now, simulate pattern detection based on position */
-    if (x > 50 && y > 50 && x < 200 && y < 200) {
-        /* Simulate finding a compact bull's-eye */
+    /* Check if coordinates are within image bounds with quiet zone margin */
+    if (x < AZTEC_MIN_QUIET_ZONE || x >= width - AZTEC_MIN_QUIET_ZONE ||
+        y < AZTEC_MIN_QUIET_ZONE || y >= height - AZTEC_MIN_QUIET_ZONE) {
+        return 0;
+    }
+
+    /* First try compact pattern */
+    int match_compact = 1;
+    for (int i = 0; i < AZTEC_COMPACT_FINDER && match_compact; i++) {
+        unsigned char *row = data + (y + i) * row_stride;
+        int expected = compact_bullseye_pattern[i];
+        int actual = 0;
+        
+        for (int j = 0; j < 9; j++) {
+            actual = (actual << 1) | (row[x + j] > 127);
+        }
+        
+        if (actual != expected) {
+            match_compact = 0;
+        }
+    }
+
+    if (match_compact) {
         *is_compact = 1;
         return AZTEC_COMPACT_FINDER;
-    } else if (x > 100 && y > 100 && x < 300 && y < 300) {
-        /* Simulate finding a full bull's-eye */
+    }
+
+    /* Try full pattern if compact didn't match */
+    int match_full = 1;
+    for (int i = 0; i < AZTEC_FULL_FINDER && match_full; i++) {
+        unsigned char *row = data + (y + i) * row_stride;
+        int expected = full_bullseye_pattern[i];
+        int actual = 0;
+        
+        for (int j = 0; j < 13; j++) {
+            actual = (actual << 1) | (row[x + j] > 127);
+        }
+        
+        if (actual != expected) {
+            match_full = 0;
+        }
+    }
+
+    if (match_full) {
         *is_compact = 0;
         return AZTEC_FULL_FINDER;
     }
-    
+
     return 0; /* No pattern found */
 }
 
 /* Determine orientation from corner patterns */
 static int determine_orientation(zbar_decoder_t *dcode, aztec_finder_t *finder)
 {
-    /* In a real implementation, this would examine the orientation patterns
-     * in the four corners of the core to determine the correct orientation
-     * For now, assume orientation 0 (no rotation)
-     */
-    finder->orientation = 0;
+    unsigned char *data = dcode->buf;
+    int width = dcode->width;
+    int row_stride = dcode->stride;
+    int x = finder->x;
+    int y = finder->y;
+    int size = finder->is_compact ? AZTEC_COMPACT_CORE : AZTEC_FULL_CORE;
+    int corners[4] = {0, 0, 0, 0};
+
+    /* Read corner patterns */
+    /* Upper Left */
+    unsigned char *row = data + (y - 2) * row_stride;
+    corners[0] = ((row[x - 2] > 127) << 2) | 
+                 ((row[x - 1] > 127) << 1) |
+                 (row[x] > 127);
+
+    /* Upper Right */
+    row = data + (y - 2) * row_stride;
+    corners[1] = ((row[x + size - 3] > 127) << 2) |
+                 ((row[x + size - 2] > 127) << 1) |
+                 (row[x + size - 1] > 127);
+
+    /* Lower Right */
+    row = data + (y + size - 1) * row_stride;
+    corners[2] = ((row[x + size - 3] > 127) << 2) |
+                 ((row[x + size - 2] > 127) << 1) |
+                 (row[x + size - 1] > 127);
+
+    /* Lower Left */
+    row = data + (y + size - 1) * row_stride;
+    corners[3] = ((row[x - 2] > 127) << 2) |
+                 ((row[x - 1] > 127) << 1) |
+                 (row[x] > 127);
+
+    /* Match corners to expected patterns */
+    if (corners[0] == AZTEC_CORNER_UL && corners[1] == AZTEC_CORNER_UR &&
+        corners[2] == AZTEC_CORNER_LR && corners[3] == AZTEC_CORNER_LL) {
+        finder->orientation = 0;
+    }
+    else if (corners[3] == AZTEC_CORNER_UL && corners[0] == AZTEC_CORNER_UR &&
+             corners[1] == AZTEC_CORNER_LR && corners[2] == AZTEC_CORNER_LL) {
+        finder->orientation = 90;
+    }
+    else if (corners[2] == AZTEC_CORNER_UL && corners[3] == AZTEC_CORNER_UR &&
+             corners[0] == AZTEC_CORNER_LR && corners[1] == AZTEC_CORNER_LL) {
+        finder->orientation = 180;
+    }
+    else if (corners[1] == AZTEC_CORNER_UL && corners[2] == AZTEC_CORNER_UR &&
+             corners[3] == AZTEC_CORNER_LR && corners[0] == AZTEC_CORNER_LL) {
+        finder->orientation = 270;
+    }
+    else {
+        return 0; /* Invalid corner patterns */
+    }
+
     return 1;
 }
 
 /* Read mode message from the symbol */
 static int read_mode_message(zbar_decoder_t *dcode, aztec_decoder_t *aztec_dec)
 {
-    /* In a real implementation, this would read the mode message
-     * surrounding the bull's-eye to determine:
-     * - Number of data layers
-     * - Number of data codewords
-     * - Number of error correction codewords
-     * 
-     * For now, simulate with default values for a simple symbol
+    /* Mode message is encoded in a ring around the finder pattern.
+     * For compact symbols: 28 bits (4 words of 7 bits)
+     * For full symbols: 40 bits (5 words of 8 bits)
      */
-    aztec_dec->mode.layers = 1;
-    aztec_dec->mode.data_codewords = 10;
-    aztec_dec->mode.ecc_codewords = 4;
+    int is_compact = (aztec_dec->finder.size == AZTEC_COMPACT_FINDER);
+    int bits_per_word = is_compact ? 7 : 8;
+    int total_words = is_compact ? 4 : 5;
+    int total_bits = bits_per_word * total_words;
+    unsigned char mode_bits[40];
+    int bit_count = 0;
     
+    /* Read mode bits in clockwise direction starting from upper right */
+    int x = aztec_dec->finder.x;
+    int y = aztec_dec->finder.y;
+    int size = aztec_dec->finder.size;
+    int row_stride = dcode->width;
+    unsigned char *data = dcode->buf;
+    
+    /* Adjust coordinates based on orientation */
+    switch(aztec_dec->finder.orientation) {
+        case 90:
+            x = aztec_dec->finder.y;
+            y = dcode->width - aztec_dec->finder.x - 1;
+            break;
+        case 180:
+            x = dcode->width - aztec_dec->finder.x - 1;
+            y = dcode->height - aztec_dec->finder.y - 1;
+            break;
+        case 270:
+            x = dcode->height - aztec_dec->finder.y - 1;
+            y = aztec_dec->finder.x;
+            break;
+    }
+
+    /* Read mode bits from the four sides */
+    for(int side = 0; side < 4 && bit_count < total_bits; side++) {
+        int dx = (side == 0 || side == 2) ? 1 : 0;
+        int dy = (side == 1 || side == 3) ? 1 : 0;
+        int cx = x + (side == 0 ? size/2 : (side == 2 ? -size/2 : 0));
+        int cy = y + (side == 1 ? size/2 : (side == 3 ? -size/2 : 0));
+        
+        for(int i = 0; i < size/2 && bit_count < total_bits; i++) {
+            unsigned char *pixel = data + cy * row_stride + cx;
+            mode_bits[bit_count++] = (*pixel > 127);
+            cx += dx;
+            cy += dy;
+        }
+    }
+
+    /* Decode mode message */
+    int layers = 0;
+    int data_words = 0;
+    int ecc_words = 0;
+
+    if(is_compact) {
+        /* Compact format: [2 bits layers][6 bits data][4 bits ecc][16 bits CRC] */
+        layers = (mode_bits[0] << 1) | mode_bits[1];
+        for(int i = 0; i < 6; i++)
+            data_words = (data_words << 1) | mode_bits[2 + i];
+        for(int i = 0; i < 4; i++) 
+            ecc_words = (ecc_words << 1) | mode_bits[8 + i];
+    }
+    else {
+        /* Full format: [5 bits layers][11 bits data][4 bits ecc][20 bits CRC] */
+        for(int i = 0; i < 5; i++)
+            layers = (layers << 1) | mode_bits[i];
+        for(int i = 0; i < 11; i++)
+            data_words = (data_words << 1) | mode_bits[5 + i];
+        for(int i = 0; i < 4; i++)
+            ecc_words = (ecc_words << 1) | mode_bits[16 + i];
+    }
+
+    aztec_dec->mode.layers = layers + 1;
+    aztec_dec->mode.data_codewords = data_words;
+    aztec_dec->mode.ecc_codewords = ecc_words;
+
     return 1;
 }
 
@@ -127,35 +277,95 @@ static int read_mode_message(zbar_decoder_t *dcode, aztec_decoder_t *aztec_dec)
 static int extract_data_bits(zbar_decoder_t *dcode, aztec_decoder_t *aztec_dec,
                             unsigned char *bits, int max_bits)
 {
-    /* In a real implementation, this would:
-     * 1. Read data in clockwise spiral from center outward
-     * 2. Skip reference grid modules for full symbols
-     * 3. Extract bits from each data layer
-     * 
-     * For now, simulate with some test data
-     */
-    const char test_data[] = "Hello Aztec!";
-    int test_len = strlen(test_data);
     int bit_count = 0;
+    int x = aztec_dec->finder.x;
+    int y = aztec_dec->finder.y;
+    int size = aztec_dec->mode.layers * 2;
+    int row_stride = dcode->width;
+    unsigned char *data = dcode->buf;
     
-    /* Convert test string to bits (simplified) */
-    for (int i = 0; i < test_len && bit_count < max_bits - 8; i++) {
-        unsigned char c = test_data[i];
-        for (int j = 7; j >= 0; j--) {
-            bits[bit_count++] = (c >> j) & 1;
+    /* Start from center and spiral outward clockwise */
+    int layer = 0;
+    int direction = 0; /* 0=right, 1=down, 2=left, 3=up */
+    int steps = 1;
+    int step_count = 0;
+    int step_change = 0;
+
+    while (layer < aztec_dec->mode.layers && bit_count < max_bits) {
+        /* Get current pixel value */
+        unsigned char *pixel = data + y * row_stride + x;
+        
+        /* Skip reference grid points in full symbols */
+        if (!aztec_dec->is_compact && ((x + y) % 16 == 0)) {
+            /* Move to next position without reading */
+        }
+        else {
+            /* Add bit to output */
+            bits[bit_count++] = (*pixel > 127);
+        }
+
+        /* Move to next position */
+        switch (direction) {
+            case 0: x++; break;  /* Right */
+            case 1: y++; break;  /* Down */
+            case 2: x--; break;  /* Left */ 
+            case 3: y--; break;  /* Up */
+        }
+
+        step_count++;
+        if (step_count == steps) {
+            direction = (direction + 1) % 4;
+            step_count = 0;
+            step_change++;
+            if (step_change == 2) {
+                steps++;
+                step_change = 0;
+                layer++;
+            }
         }
     }
-    
+
     return bit_count;
 }
 
-/* Simple Reed-Solomon error correction (placeholder) */
-static int apply_error_correction(unsigned char *data, int data_len, int ecc_len)
+/* Reed-Solomon error correction for Aztec codes */
+static int apply_error_correction(unsigned char *data, int data_len, int ecc_len) 
 {
-    /* In a real implementation, this would apply Reed-Solomon error correction
-     * using the specified parameters for Aztec codes
-     * For now, assume data is correct and return success
-     */
+    /* Initialize Reed-Solomon decoder */
+    int symsize = 8; /* 8-bit symbols */
+    int gfpoly = 0x11D; /* x^8 + x^4 + x^3 + x^2 + 1 */
+    int fcr = 1; /* First consecutive root */
+    int prim = 1; /* Primitive element */
+    int nroots = ecc_len; /* Number of error correction symbols */
+    
+    void *rs = init_rs(symsize, gfpoly, fcr, prim, nroots);
+    if (!rs) return 0;
+    
+    /* Make copy of data for correction */
+    unsigned char *data_out = malloc(data_len);
+    if (!data_out) {
+        free_rs(rs);
+        return 0;
+    }
+    memcpy(data_out, data, data_len);
+    
+    /* Apply error correction */
+    int err_count = decode_rs_char(rs, data_out, NULL, 0);
+    
+    /* Check if correction was successful */
+    if (err_count < 0) {
+        free(data_out);
+        free_rs(rs);
+        return 0;
+    }
+    
+    /* Copy corrected data back */
+    memcpy(data, data_out, data_len);
+    
+    /* Cleanup */
+    free(data_out);
+    free_rs(rs);
+    
     return 1;
 }
 
@@ -163,41 +373,81 @@ static int apply_error_correction(unsigned char *data, int data_len, int ecc_len
 static int decode_aztec_data(unsigned char *bits, int bit_count, 
                             unsigned char *output, int max_output)
 {
+    /* Character encoding tables */
+    static const char upper_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    static const char lower_table[] = "abcdefghijklmnopqrstuvwxyz";
+    static const char mixed_table[] = "0123456789\r\t,:#-.$/+%*=^";
+    static const char punct_table[] = "{}[]()<>\"'\\.;:/?@_|!~-,";
+    static const char digit_table[] = "0123456789,.";
+
     int bit_pos = 0;
     int output_pos = 0;
     int mode = 0; /* 0=upper, 1=lower, 2=mixed, 3=punct, 4=digit */
     
-    while (bit_pos < bit_count - 5 && output_pos < max_output - 1) {
-        /* Read 5-bit character (simplified) */
+    while (bit_pos < bit_count && output_pos < max_output - 1) {
+        /* Read next code */
+        int code_bits = (mode == 4) ? 4 : 5;
+        if (bit_pos + code_bits > bit_count) break;
+        
         int value = 0;
-        for (int i = 0; i < 5 && bit_pos < bit_count; i++) {
+        for (int i = 0; i < code_bits; i++) {
             value = (value << 1) | bits[bit_pos++];
         }
+
+        /* Handle mode switches */
+        if (mode != 4 && value == 0) { /* Upper mode shift */
+            mode = 0;
+            continue;
+        }
+        if (mode != 4 && value == 28) { /* Lower mode shift */
+            mode = 1;
+            continue;
+        }
+        if (mode != 4 && value == 29) { /* Mixed mode shift */
+            mode = 2;
+            continue;
+        }
+        if (mode != 4 && value == 30) { /* Punct mode shift */
+            mode = 3;
+            continue;
+        }
+        if (value == 31) { /* Digit mode shift */
+            mode = 4;
+            continue;
+        }
         
-        /* Decode based on current mode */
+        /* Decode character based on current mode */
         switch (mode) {
             case 0: /* Upper mode */
-                if (value < 27) {
+                if (value < 26) {
                     output[output_pos++] = upper_table[value];
                 }
                 break;
+                
             case 1: /* Lower mode */
-                if (value < 27) {
+                if (value < 26) {
                     output[output_pos++] = lower_table[value];
                 }
                 break;
+                
+            case 2: /* Mixed mode */
+                if (value < 26) {
+                    output[output_pos++] = mixed_table[value];
+                }
+                break;
+                
+            case 3: /* Punct mode */
+                if (value < 26) {
+                    output[output_pos++] = punct_table[value];
+                }
+                break;
+                
             case 4: /* Digit mode */
-                if (value < 13) {
+                if (value < 12) {
                     output[output_pos++] = digit_table[value];
                 }
                 break;
-            default:
-                /* Handle other modes */
-                output[output_pos++] = '?';
-                break;
         }
-        
-        /* Mode switches would be handled here in a full implementation */
     }
     
     output[output_pos] = '\0';
@@ -214,22 +464,32 @@ static inline int aztec_decode_finder(zbar_decoder_t *dcode)
             /* Initialize pattern search */
             aztec_dec->state = AZTEC_STATE_FINDER;
             aztec_dec->pattern_idx = 0;
+            aztec_dec->finder.center_x = 0;
+            aztec_dec->finder.center_y = 0;
+            aztec_dec->finder.size = 0;
+            aztec_dec->finder.is_compact = 0;
             return 0;
             
         case AZTEC_STATE_FINDER:
             {
                 /* Look for bull's-eye pattern */
-                int is_compact;
-                int pattern_size = detect_bullseye_pattern(dcode, 100, 100, &is_compact);
+                int width = zbar_image_get_width(dcode->img);
+                int height = zbar_image_get_height(dcode->img);
+                int is_compact = 0;
                 
-                if (pattern_size > 0) {
-                    /* Found bull's-eye pattern */
-                    aztec_dec->finder.center_x = 100;
-                    aztec_dec->finder.center_y = 100;
-                    aztec_dec->finder.size = pattern_size;
-                    aztec_dec->finder.is_compact = is_compact;
-                    aztec_dec->state = AZTEC_STATE_ORIENTATION;
-                    return 0;
+                /* Scan image at regular intervals */
+                for (int y = AZTEC_MIN_QUIET_ZONE; y < height - AZTEC_MIN_QUIET_ZONE; y += 16) {
+                    for (int x = AZTEC_MIN_QUIET_ZONE; x < width - AZTEC_MIN_QUIET_ZONE; x += 16) {
+                        int pattern_size = detect_bullseye_pattern(dcode, x, y, &is_compact);
+                        if (pattern_size > 0) {
+                            aztec_dec->finder.center_x = x;
+                            aztec_dec->finder.center_y = y;
+                            aztec_dec->finder.size = pattern_size;
+                            aztec_dec->finder.is_compact = is_compact;
+                            aztec_dec->state = AZTEC_STATE_ORIENTATION;
+                            return 0;
+                        }
+                    }
                 }
                 break;
             }
@@ -240,50 +500,62 @@ static inline int aztec_decode_finder(zbar_decoder_t *dcode)
                 aztec_dec->state = AZTEC_STATE_MODE;
                 return 0;
             }
+            aztec_dec->state = AZTEC_STATE_INIT; /* Reset if orientation fails */
             break;
             
         case AZTEC_STATE_MODE:
             /* Read mode message */
             if (read_mode_message(dcode, aztec_dec)) {
-                aztec_dec->state = AZTEC_STATE_DATA;
-                return 0;
+                if (aztec_dec->mode.data_codewords > 0 && 
+                    aztec_dec->mode.ecc_codewords > 0) {
+                    aztec_dec->state = AZTEC_STATE_DATA;
+                    return 0;
+                }
             }
+            aztec_dec->state = AZTEC_STATE_INIT; /* Reset if mode read fails */
             break;
             
         case AZTEC_STATE_DATA:
             {
                 /* Extract and decode data */
-                unsigned char bits[2048];
-                int bit_count = extract_data_bits(dcode, aztec_dec, bits, 2048);
+                unsigned char bits[AZTEC_MAX_SIZE * AZTEC_MAX_SIZE];
+                int bit_count = extract_data_bits(dcode, aztec_dec, bits, 
+                                                sizeof(bits));
                 
                 if (bit_count > 0) {
                     /* Apply error correction */
-                    if (apply_error_correction(bits, 
-                                             aztec_dec->mode.data_codewords * 8,
-                                             aztec_dec->mode.ecc_codewords * 8)) {
-                        
+                    int data_bits = aztec_dec->mode.data_codewords * 8;
+                    int ecc_bits = aztec_dec->mode.ecc_codewords * 8;
+                    
+                    if (apply_error_correction(bits, data_bits, ecc_bits)) {
                         /* Decode data */
-                        unsigned char decoded_data[512];
-                        int decoded_len = decode_aztec_data(bits, bit_count, 
-                                                           decoded_data, 512);
+                        unsigned char decoded_data[AZTEC_MAX_SIZE * AZTEC_MAX_SIZE / 2];
+                        int decoded_len = decode_aztec_data(bits, bit_count,
+                                                          decoded_data,
+                                                          sizeof(decoded_data));
                         
-                        if (decoded_len > 0) {
-                            /* Store decoded data in decoder buffer */
-                            if (decoded_len < sizeof(dcode->buf)) {
-                                memcpy(dcode->buf, decoded_data, decoded_len);
-                                dcode->buflen = decoded_len;
-                                aztec_dec->state = AZTEC_STATE_COMPLETE;
-                                return 1; /* Success! */
-                            }
+                        if (decoded_len > 0 && 
+                            decoded_len < sizeof(dcode->buf)) {
+                            /* Store decoded data */
+                            memcpy(dcode->buf, decoded_data, decoded_len);
+                            dcode->buflen = decoded_len;
+                            aztec_dec->state = AZTEC_STATE_COMPLETE;
+                            return 1; /* Success! */
                         }
                     }
                 }
+                aztec_dec->state = AZTEC_STATE_INIT; /* Reset if decoding fails */
                 break;
             }
             
         case AZTEC_STATE_COMPLETE:
             /* Decoding complete */
             return 1;
+            
+        default:
+            /* Invalid state */
+            aztec_dec->state = AZTEC_STATE_INIT;
+            break;
     }
     
     return -1; /* Continue searching or error */
